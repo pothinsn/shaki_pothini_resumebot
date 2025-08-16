@@ -11,7 +11,7 @@ except ImportError:
     pypdf = None
 
 # ------------ Config ------------
-RESUME_PDF_FILENAME = "YourResume.pdf"   # <- ensure this file is next to app.py
+RESUME_PDF_FILENAME = "Shaki_Pothini_Resume.pdf"   # <- ensure this file is next to app.py
 MODEL_NAME = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 EMBED_MODEL = os.environ.get("OPENAI_EMBED_MODEL", "text-embedding-3-small")
 INDEX_FILE = "resume_index.json"         # persisted on server
