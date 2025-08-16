@@ -1,5 +1,3 @@
-# Your Streamlit résumé chatbot app
-
 import os, re, json
 from io import BytesIO
 from typing import List, Dict, Tuple
@@ -12,9 +10,20 @@ try:
 except ImportError:
     pypdf = None
 
+# ------------ Config ------------
+RESUME_PDF_FILENAME = "YourResume.pdf"   # <- ensure this file is next to app.py
 MODEL_NAME = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 EMBED_MODEL = os.environ.get("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+INDEX_FILE = "resume_index.json"         # persisted on server
 
+# ------------ Key handling ------------
+def get_api_key() -> str:
+    # Recruiters should NOT enter a key; we read from server-side secrets or env
+    if "OPENAI_API_KEY" in st.secrets:
+        return st.secrets["OPENAI_API_KEY"]
+    return os.environ.get("OPENAI_API_KEY", "")
+
+# ------------ Utils ------------
 def clean_text(t: str) -> str:
     return re.sub(r"\s+", " ", (t or "")).strip()
 
@@ -49,10 +58,19 @@ def extract_pdf_text(file_bytes: bytes) -> str:
             pages.append("")
     return "\n".join(pages)
 
-def build_index(client: OpenAI, text: str) -> Dict:
+def build_index_from_text(client: OpenAI, text: str) -> Dict:
     chunks = split_text(text)
     vecs = embed(client, chunks)
-    return {"chunks": chunks, "vecs": vecs}
+    idx = {"chunks": chunks, "vecs": vecs, "embed_model": EMBED_MODEL}
+    with open(INDEX_FILE, "w", encoding="utf-8") as f:
+        json.dump(idx, f)
+    return idx
+
+def load_index_if_any() -> Dict:
+    if os.path.exists(INDEX_FILE):
+        with open(INDEX_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
 
 def retrieve(index: Dict, query: str, client: OpenAI, k: int = 4) -> List[str]:
     if not index: return []
@@ -78,63 +96,79 @@ def answer(client: OpenAI, query: str, contexts: List[str], tone: str, audience:
     )
     return r.choices[0].message.content.strip()
 
+# ------------ App ------------
 st.set_page_config(page_title="Chat with my Résumé", page_icon="🗂️", layout="centered")
 st.title("🗂️ Chat with my Résumé")
 
-with st.sidebar:
-    st.subheader("Setup")
-    api_key = st.text_input("OpenAI API Key", type="password")
+# Tone/audience controls (visible to visitors)
+col1, col2, col3 = st.columns(3)
+with col1:
     tone = st.selectbox("Tone", ["professional", "executive", "friendly", "enthusiastic"], index=0)
+with col2:
     audience = st.selectbox("Audience", ["General", "SWE", "PM", "Data", "AI/ML"], index=0)
+with col3:
     k = st.slider("Evidence passages", 1, 8, 4)
 
-if "index" not in st.session_state:
-    st.session_state.index = {}
+# Show a download button for the bundled PDF
+if os.path.exists(RESUME_PDF_FILENAME):
+    with open(RESUME_PDF_FILENAME, "rb") as f:
+        st.download_button("⬇️ Download my PDF résumé", f, file_name="Resume.pdf")
+
+# Prepare OpenAI client (server-side key only)
+api_key = get_api_key()
+if not api_key:
+    st.error("Server is missing OPENAI_API_KEY (set in Streamlit **Secrets** or env).")
+    st.stop()
+client = OpenAI(api_key=api_key)
+
+# Build/load index automatically (no upload UI)
+@st.cache_resource(show_spinner=True)
+def get_or_create_index() -> Dict:
+    # 1) load existing index if present
+    idx = load_index_if_any()
+    if idx:
+        return idx
+    # 2) otherwise read the bundled PDF and build once
+    if not os.path.exists(RESUME_PDF_FILENAME):
+        raise FileNotFoundError(f"{RESUME_PDF_FILENAME} not found. Add it next to app.py.")
+    with open(RESUME_PDF_FILENAME, "rb") as f:
+        pdf_bytes = f.read()
+    text = extract_pdf_text(pdf_bytes)
+    if not text.strip():
+        raise ValueError("Résumé PDF has no extractable text. Export a text-based PDF (not scanned).")
+    return build_index_from_text(client, text)
+
+with st.spinner("Preparing résumé index…"):
+    index = get_or_create_index()
+
+# Simple legacy-safe chat UI (works across Streamlit versions)
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-uploaded = st.file_uploader("Upload your résumé (PDF).", type=["pdf"])
-
-col1, col2 = st.columns(2)
-with col1:
-    build = st.button("📚 Build / Refresh Index", disabled=(not api_key or uploaded is None))
-with col2:
-    st.caption("Tip: Rebuild after uploading a new PDF.")
-
-client = OpenAI(api_key=api_key) if api_key else None
-
-if build:
-    if client is None:
-        st.error("Enter your OpenAI API key in the sidebar.")
-    else:
-        try:
-            text = extract_pdf_text(uploaded.read())
-            st.session_state.index = build_index(client, text)
-            st.success(f"Index ready. {len(st.session_state.index.get('chunks', []))} passages.")
-        except Exception as e:
-            st.exception(e)
-
-st.info("Try: “120-word leadership summary”, “3 bullets for Diagnostics PM role”, “Top outcomes from instrument control projects.”")
-
 for m in st.session_state.messages:
-    st.chat_message(m["role"]).markdown(m["content"])
+    who = "You" if m["role"] == "user" else "Assistant"
+    st.markdown(f"**{who}:** {m['content']}")
 
-q = st.chat_input("Ask about my résumé...")
-if q:
-    st.session_state.messages.append({"role":"user","content":q})
-    st.chat_message("user").markdown(q)
-    if client is None:
-        st.chat_message("assistant").error("Add your API key in the sidebar.")
-    elif not st.session_state.index:
-        st.chat_message("assistant").error("Build the index first.")
-    else:
-        ctx = retrieve(st.session_state.index, q, client, k=k)
-        a = answer(client, q, ctx, tone=tone, audience=audience)
-        st.session_state.messages.append({"role":"assistant","content":a})
-        st.chat_message("assistant").markdown(a)
-        with st.expander("Sources used"):
-            if ctx:
-                for i, c in enumerate(ctx, 1):
-                    st.write(f"**Source {i}:** {c[:600]}{'…' if len(c) > 600 else ''}")
-            else:
-                st.write("No sources.")
+user_col, send_col = st.columns([4,1])
+with user_col:
+    q = st.text_input("Ask about my résumé…")
+with send_col:
+    send = st.button("Send", use_container_width=True)
+
+if send and q.strip():
+    question = q.strip()
+    st.session_state.messages.append({"role": "user", "content": question})
+    st.markdown(f"**You:** {question}")
+
+    ctx = retrieve(index, question, client, k=k)
+    a = answer(client, question, ctx, tone=tone, audience=audience)
+
+    st.session_state.messages.append({"role": "assistant", "content": a})
+    st.markdown(f"**Assistant:** {a}")
+
+    with st.expander("Sources used"):
+        if ctx:
+            for i, c in enumerate(ctx, 1):
+                st.write(f"**Source {i}:** {c[:600]}{'…' if len(c) > 600 else ''}")
+        else:
+            st.write("No sources.")
