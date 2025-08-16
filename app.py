@@ -97,8 +97,8 @@ def answer(client: OpenAI, query: str, contexts: List[str], tone: str, audience:
     return r.choices[0].message.content.strip()
 
 # ------------ App ------------
-st.set_page_config(page_title="Chat with my Résumé", page_icon="🗂️", layout="centered")
-st.title("🗂️ Chat with my Résumé")
+st.set_page_config(page_title="Résumé in Dialogue", page_icon="🗂️", layout="centered")
+st.title("🗂️ Résumé in Dialogue")
 
 # Tone/audience controls (visible to visitors)
 col1, col2, col3 = st.columns(3)
@@ -151,7 +151,7 @@ for m in st.session_state.messages:
 
 user_col, send_col = st.columns([4,1])
 with user_col:
-    q = st.text_input("Ask about my résumé…")
+    q = st.text_input("Ask My Résumé – Immediate Insights into My Career Achievements")
 with send_col:
     send = st.button("Send", use_container_width=True)
 
